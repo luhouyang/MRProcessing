@@ -27,6 +27,9 @@ def calculate_dt(df_in):
     """
     Calculates time delta (dt) in seconds and ISI in milliseconds.
     Returns a DataFrame with 'dt' and 'isi_ms'.
+    
+    Includes simple debouncing: dt < 0.001s (1ms) is treated as noise/duplicate 
+    to prevent unrealistically high frequency calculations (e.g. >1000Hz).
     """
     if df_in.empty:
         return pd.DataFrame()
@@ -38,7 +41,14 @@ def calculate_dt(df_in):
 
     # Calculate time delta (dt) in seconds (main unit)
     df_time['dt'] = df_time['timestamp'].diff()
+    
+    # replace 0 with NaN (exact duplicates)
     df_time['dt'] = df_time['dt'].replace(0, np.nan)
+    
+    # Debounce: Treat extremely small dt (e.g. < 1ms) as duplicates/noise
+    # This fixes the issue where burst reads result in 7000Hz+ calculations
+    # HoloLens is typically ~30-60Hz, so 1000Hz is a safe upper bound.
+    df_time.loc[df_time['dt'] < 0.001, 'dt'] = np.nan
 
     # Calculate ISI in milliseconds (requested unit)
     df_time['isi_ms'] = df_time['dt'] * 1000
@@ -58,6 +68,7 @@ def calculate_frequency_metrics(df_in):
         return pd.DataFrame()
 
     # Calculate instantaneous frequency (Hz = 1 / dt)
+    # Because we filtered dt < 0.001 in calculate_dt, we won't get >1000Hz values here.
     df_freq['frequency_hz'] = 1.0 / df_freq['dt']
 
     return df_freq
@@ -370,6 +381,15 @@ def resample_timeseries_data(data_list, metrics, n_points=1000):
         # 2. Resample each metric
         df_metrics['time_sec'] = df_metrics['timestamp'] - df_metrics[
             'timestamp'].iloc[0]
+        
+        # FIX: Remove duplicate time indices to prevent reindex error
+        df_metrics = df_metrics.drop_duplicates(subset='time_sec', keep='first')
+
+        # FIX: Keep only relevant numeric columns to prevent interpolation warnings with object/string cols
+        # Ensure we keep the index column 'time_sec' and valid metric columns
+        cols_to_keep = ['time_sec'] + [m for m in metrics if m in df_metrics.columns]
+        df_metrics = df_metrics[cols_to_keep]
+
         df_metrics = df_metrics.set_index('time_sec')
 
         # Create a new index from 0 to max_time with n_points
@@ -377,8 +397,12 @@ def resample_timeseries_data(data_list, metrics, n_points=1000):
         if max_time == 0: continue  # Skip if no duration
 
         new_index = np.linspace(0, max_time, n_points)
-        df_resampled = df_metrics.reindex(df_metrics.index.union(
-            new_index)).interpolate('index').loc[new_index]
+        
+        # Reindex and interpolate
+        # Using method='index' inside interpolate is deprecated in recent pandas for Series/DataFrame 
+        # if index is not unique, but we handled uniqueness above. 
+        # We rely on time-based interpolation (index is time).
+        df_resampled = df_metrics.reindex(df_metrics.index.union(new_index)).interpolate(method='index').loc[new_index]
 
         # 3. Store results
         for metric in metrics:

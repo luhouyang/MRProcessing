@@ -514,21 +514,53 @@ def filter_data_on_condition(
 
             # Fixations
             if generate_fixation:
-                fix_out = Path(d['PROCESSED_DATA']) / "fixations.csv"
-                if not (use_cache and fix_out.exists()):
+                fix_csv_out = Path(d['PROCESSED_DATA']) / "fixations.csv"
+                fix_ply_out = Path(d['PROCESSED_DATA']) / "fixations.ply"
+                
+                if not (use_cache and fix_csv_out.exists() and fix_ply_out.exists()):
                     try:
                         gz = load_and_standardize_dataframe(d['pointcloud'])
-                        gz = gz.rename(columns={
-                            'estX': 'x',
-                            'estY': 'y',
-                            'estZ': 'z'
-                        })
-                        fix = process_fixations(gz, config.FIXATION_ALGORITHM,
-                                                config.FIXATION_PARAMS)
-                        fix.to_csv(fix_out, index=False)
-                    except:
-                        increment_error('Fixation Fail', d['pointcloud'],
-                                        errors)
+                        gz = gz.rename(columns={'estX': 'x', 'estY': 'y', 'estZ': 'z'})
+                        
+                        fix = process_fixations(
+                            gaze_data=gz, 
+                            algorithm=config.FIXATION_ALGORITHM,
+                            params=config.FIXATION_PARAMS,
+                            model_path=d['model']
+                        )
+
+                        # 1. Save CSV
+                        fix.to_csv(fix_csv_out, index=False)
+
+                        # 2. Save Point Cloud with Duration Colors
+                        if not fix.empty:
+                            pcd = o3d.geometry.PointCloud()
+                            points_xyz = fix[['x', 'y', 'z']].to_numpy()
+                            pcd.points = o3d.utility.Vector3dVector(points_xyz)
+                            
+                            durations = fix['duration_ms'].values
+                            
+                            # Normalize (0 to 1 range)
+                            # Handle edge case where min == max (e.g., only 1 fixation or all same duration)
+                            if durations.max() > durations.min():
+                                norm = (durations - durations.min()) / (durations.max() - durations.min())
+                            else:
+                                norm = np.ones_like(durations) * 0.5 # Default to middle color
+                            
+                            cmap = plt.get_cmap('jet')
+                            colors = cmap(norm)[:, :3]
+                            
+                            pcd.colors = o3d.utility.Vector3dVector(colors)
+
+                            active_threads.append(
+                                save_geometry_threaded(str(fix_ply_out), pcd, error_queue)
+                            )
+                        else:
+                            with open(fix_ply_out, 'w') as f: f.write("ply\nformat ascii 1.0\nelement vertex 0\nend_header\n")
+
+                    except Exception as e:
+                        print(f"Fixation error on {d['pointcloud']}: {e}")
+                        increment_error('Fixation Fail', d['pointcloud'], errors)
 
             # Voice
             if generate_voice and 'voice' in d:
