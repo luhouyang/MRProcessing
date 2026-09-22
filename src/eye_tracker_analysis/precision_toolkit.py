@@ -22,7 +22,6 @@ def vectors_to_angles_deg(vectors):
 
 # Core Time Calculation Functions
 
-
 def calculate_dt(df_in):
     """
     Calculates time delta (dt) in seconds and ISI in milliseconds.
@@ -74,6 +73,39 @@ def calculate_frequency_metrics(df_in):
     return df_freq
 
 
+def filter_by_isi(df_in, threshold_ms=30):
+    """
+    Filters a DataFrame based on Inter-Sample Interval (ISI) in milliseconds.
+    Keeps rows where ISI is <= threshold_ms.
+    The first row of the dataset (which has NaN ISI) is always kept to preserve the start.
+    
+    Args:
+        df_in (pd.DataFrame): Input dataframe with a 'timestamp' column.
+        threshold_ms (float): Maximum allowed ISI in milliseconds.
+        
+    Returns:
+        pd.DataFrame: A filtered copy of the dataframe.
+    """
+    if df_in.empty:
+        return df_in
+    
+    # Calculate ISI
+    df_calc = calculate_dt(df_in)
+    
+    if 'isi_ms' not in df_calc.columns:
+        return df_in # Should not happen if calculate_dt works
+        
+    # Create mask: Keep if ISI <= threshold OR if ISI is NaN (the very first sample)
+    # Note: calculate_dt puts NaN for the first sample or exact duplicates (if not filtered inside)
+    mask = (df_calc['isi_ms'] <= threshold_ms) | (df_calc['isi_ms'].isna())
+    
+    filtered_df = df_calc[mask].copy()
+    
+    # We return the dataframe with the calculated columns (dt, isi_ms) included
+    # as they are useful for downstream analysis and avoiding recalculation
+    return filtered_df
+
+
 # Core Metric Calculation Functions
 
 
@@ -83,6 +115,8 @@ def calculate_head_movement_metrics(df_in):
     Returns a DataFrame with new columns for these metrics.
     """
     # Use the central time calculation
+    # If the input DF already has dt/isi_ms from filter_by_isi, this might recalculate
+    # but that is safer to ensure consistency if rows were dropped externally.
     df_head = calculate_dt(df_in)
 
     if df_head.empty:

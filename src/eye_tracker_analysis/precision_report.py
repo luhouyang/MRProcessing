@@ -5,6 +5,7 @@ from mpl_toolkits.mplot3d import Axes3D
 import sys
 import os
 import shutil
+from pathlib import Path
 import open3d as o3d
 # Import for statistical analysis
 from scipy.stats import friedmanchisquare, wilcoxon, spearmanr
@@ -13,10 +14,13 @@ from statsmodels.sandbox.stats.multicomp import multipletests
 import precision_toolkit as ptk
 
 # Configuration
-# SESSIONS_ROOT_DIR = r'C:\Users\luhou\Desktop\python\MRProcessing\data\experiment'
-SESSIONS_ROOT_DIR = r"C:\Users\luhou\Desktop\python\MRProcessing\data\ARCHIVE\TEST6"
+# Using pathlib for robust path handling
+SESSIONS_ROOT_DIR = Path(r'C:\Users\luhou\Desktop\python\MRProcessing\data\test')
+# SESSIONS_ROOT_DIR = Path(r"C:\Users\luhou\Desktop\python\MRProcessing\data\ARCHIVE\TEST7")
 
-RESULTS_DIR = os.path.join(os.path.dirname(SESSIONS_ROOT_DIR), 'RESULTS')
+# Calculate RESULTS_DIR as a sibling folder to the data source
+# e.g., if data is in .../data/experiment_highsampling, results go to .../data/RESULTS
+RESULTS_DIR = SESSIONS_ROOT_DIR.parent / 'RESULTS'
 
 # Folders to process within each session
 FOLDERS_TO_ANALYZE = [
@@ -2255,7 +2259,10 @@ def main():
             file=sys.stderr)
         return
 
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    # Use pathlib mkdir for safety
+    if not os.path.exists(RESULTS_DIR):
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+    
     print(f"Saving all results to: {RESULTS_DIR}")
 
     all_results_data = []  # For summary stats
@@ -2304,6 +2311,25 @@ def main():
                         f"Error: 'pointcloud.csv' in {folder_name} is empty. Skipping."
                     )
                     continue
+
+                # --- NEW LOGIC START ---
+                # Check Mean ISI for the entire sample (folder)
+                # Calculate ISI statistics just for the filtering decision
+                df_freq_check = ptk.calculate_frequency_metrics(df_gaze)
+                
+                # Check if we have enough data to calculate frequency
+                if df_freq_check.empty or 'isi_ms' not in df_freq_check.columns or df_freq_check['isi_ms'].dropna().empty:
+                     print(f"Warning: Could not calculate ISI for {folder_name}. Skipping.")
+                     continue
+                
+                mean_isi_val = df_freq_check['isi_ms'].mean()
+                median_isi_val = df_freq_check['isi_ms'].median()
+                
+                # Filter: If Mean ISI > 30ms, exclude this entire sample (folder)
+                if median_isi_val > 20:
+                    print(f"Skipping {folder_name}: Median ISI ({median_isi_val:.2f} ms) > 30 ms threshold.")
+                    continue
+                # --- NEW LOGIC END ---
 
                 has_valid_target = True
                 if 'targetName' not in df_gaze.columns or df_gaze[
