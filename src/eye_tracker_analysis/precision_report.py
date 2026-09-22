@@ -15,8 +15,8 @@ import precision_toolkit as ptk
 
 # Configuration
 # Using pathlib for robust path handling
-SESSIONS_ROOT_DIR = Path(r'C:\Users\luhou\Desktop\python\MRProcessing\data\test')
-# SESSIONS_ROOT_DIR = Path(r"C:\Users\luhou\Desktop\python\MRProcessing\data\ARCHIVE\TEST7")
+SESSIONS_ROOT_DIR = Path(r'C:\Users\User\Desktop\Python\MRProcessing\data\high_90hz') # 90Hz data
+# SESSIONS_ROOT_DIR = Path(r"C:\Users\User\Desktop\Python\MRProcessing\data\mid_60hz") # 60Hz data
 
 # Calculate RESULTS_DIR as a sibling folder to the data source
 # e.g., if data is in .../data/experiment_highsampling, results go to .../data/RESULTS
