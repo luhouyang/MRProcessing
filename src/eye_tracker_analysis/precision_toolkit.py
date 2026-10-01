@@ -5,7 +5,6 @@ import numpy as np
 def normalize(vectors):
     """Normalizes a batch of vectors. Input shape (N, 3)."""
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-    # Avoid division by zero
     norms[norms == 0] = 1e-9
     return vectors / norms
 
@@ -13,43 +12,28 @@ def normalize(vectors):
 def vectors_to_angles_deg(vectors):
     """Converts (x, y, z) vectors to (azimuth, elevation) in degrees."""
     x, y, z = vectors[:, 0], vectors[:, 1], vectors[:, 2]
-    # Note: Using arctan2(x, z) for azimuth assumes Z is forward, X is right.
     azimuth = np.rad2deg(np.arctan2(x, z))
-    # elevation = np.rad2deg(np.arcsin(y))
     elevation = np.rad2deg(np.arctan2(y, z))
     return azimuth, elevation
 
 
+# ────────────────────────────────────────────────────────────
 # Core Time Calculation Functions
+# ────────────────────────────────────────────────────────────
 
 def calculate_dt(df_in):
     """
     Calculates time delta (dt) in seconds and ISI in milliseconds.
     Returns a DataFrame with 'dt' and 'isi_ms'.
-    
-    Includes simple debouncing: dt < 0.001s (1ms) is treated as noise/duplicate 
-    to prevent unrealistically high frequency calculations (e.g. >1000Hz).
     """
     if df_in.empty:
         return pd.DataFrame()
 
     df_time = df_in.copy()
-
-    # Ensure timestamp is sorted
     df_time = df_time.sort_values(by='timestamp')
-
-    # Calculate time delta (dt) in seconds (main unit)
     df_time['dt'] = df_time['timestamp'].diff()
-    
-    # replace 0 with NaN (exact duplicates)
     df_time['dt'] = df_time['dt'].replace(0, np.nan)
-    
-    # Debounce: Treat extremely small dt (e.g. < 1ms) as duplicates/noise
-    # This fixes the issue where burst reads result in 7000Hz+ calculations
-    # HoloLens is typically ~30-60Hz, so 1000Hz is a safe upper bound.
     df_time.loc[df_time['dt'] < 0.001, 'dt'] = np.nan
-
-    # Calculate ISI in milliseconds (requested unit)
     df_time['isi_ms'] = df_time['dt'] * 1000
 
     return df_time
@@ -60,14 +44,11 @@ def calculate_frequency_metrics(df_in):
     Calculates the instantaneous data frequency (Hz) and ISI (ms).
     Returns a DataFrame with 'dt', 'isi_ms', and 'frequency_hz'.
     """
-    # Reuse the central time calculation
     df_freq = calculate_dt(df_in)
 
     if df_freq.empty:
         return pd.DataFrame()
 
-    # Calculate instantaneous frequency (Hz = 1 / dt)
-    # Because we filtered dt < 0.001 in calculate_dt, we won't get >1000Hz values here.
     df_freq['frequency_hz'] = 1.0 / df_freq['dt']
 
     return df_freq
@@ -77,52 +58,34 @@ def filter_by_isi(df_in, threshold_ms=30):
     """
     Filters a DataFrame based on Inter-Sample Interval (ISI) in milliseconds.
     Keeps rows where ISI is <= threshold_ms.
-    The first row of the dataset (which has NaN ISI) is always kept to preserve the start.
-    
-    Args:
-        df_in (pd.DataFrame): Input dataframe with a 'timestamp' column.
-        threshold_ms (float): Maximum allowed ISI in milliseconds.
-        
-    Returns:
-        pd.DataFrame: A filtered copy of the dataframe.
     """
     if df_in.empty:
         return df_in
-    
-    # Calculate ISI
+
     df_calc = calculate_dt(df_in)
-    
+
     if 'isi_ms' not in df_calc.columns:
-        return df_in # Should not happen if calculate_dt works
-        
-    # Create mask: Keep if ISI <= threshold OR if ISI is NaN (the very first sample)
-    # Note: calculate_dt puts NaN for the first sample or exact duplicates (if not filtered inside)
+        return df_in
+
     mask = (df_calc['isi_ms'] <= threshold_ms) | (df_calc['isi_ms'].isna())
-    
     filtered_df = df_calc[mask].copy()
-    
-    # We return the dataframe with the calculated columns (dt, isi_ms) included
-    # as they are useful for downstream analysis and avoiding recalculation
+
     return filtered_df
 
 
+# ────────────────────────────────────────────────────────────
 # Core Metric Calculation Functions
-
+# ────────────────────────────────────────────────────────────
 
 def calculate_head_movement_metrics(df_in):
     """
     Calculates head positional and angular velocity from the entire dataframe.
-    Returns a DataFrame with new columns for these metrics.
     """
-    # Use the central time calculation
-    # If the input DF already has dt/isi_ms from filter_by_isi, this might recalculate
-    # but that is safer to ensure consistency if rows were dropped externally.
     df_head = calculate_dt(df_in)
 
     if df_head.empty:
         return pd.DataFrame()
 
-    # 1. Positional Velocity (m/s)
     df_head['head_dx'] = df_head['headX'].diff()
     df_head['head_dy'] = df_head['headY'].diff()
     df_head['head_dz'] = df_head['headZ'].diff()
@@ -131,19 +94,14 @@ def calculate_head_movement_metrics(df_in):
                                          df_head['head_dy']**2 +
                                          df_head['head_dz']**2)
 
-    # 3D Magnitude Velocity
-    df_head[
-        'head_pos_velocity_mps'] = df_head['head_distance_m'] / df_head['dt']
+    df_head['head_pos_velocity_mps'] = df_head['head_distance_m'] / df_head['dt']
 
-    # 2D Velocity components
     df_head['head_vel_x_mps'] = df_head['head_dx'] / df_head['dt']
     df_head['head_vel_y_mps'] = df_head['head_dy'] / df_head['dt']
 
-    # 2D Magnitude Velocity (XY Plane)
     df_head['head_pos_velocity_xy_mps'] = np.sqrt(
         df_head['head_vel_x_mps']**2 + df_head['head_vel_y_mps']**2)
 
-    # 2. Angular Velocity (deg/s)
     head_fwd_vectors = normalize(
         df_head[['headForwardX', 'headForwardY', 'headForwardZ']].values)
     head_fwd_vectors_shifted = df_head[[
@@ -161,23 +119,22 @@ def calculate_head_movement_metrics(df_in):
 
 def calculate_eye_to_gaze_metrics(df_in):
     """
-    Calculates the 3D distance and vector components from the eye origin to the gaze hit point.
-    Returns a DataFrame with new columns for these metrics.
+    Calculates the 3D distance and vector components from the eye origin
+    to the gaze hit point.
     """
     if df_in.empty:
         return pd.DataFrame()
 
     df_dist = df_in.copy()
 
-    # Calculate the vector components (gaze - eye)
     df_dist['eye_gaze_vec_X'] = df_dist['globalX'] - df_dist['eyeOriginX']
     df_dist['eye_gaze_vec_Y'] = df_dist['globalY'] - df_dist['eyeOriginY']
     df_dist['eye_gaze_vec_Z'] = df_dist['globalZ'] - df_dist['eyeOriginZ']
 
-    # Calculate the 3D distance magnitude
-    df_dist['eye_gaze_dist_3D'] = np.sqrt(df_dist['eye_gaze_vec_X']**2 +
-                                          df_dist['eye_gaze_vec_Y']**2 +
-                                          df_dist['eye_gaze_vec_Z']**2)
+    df_dist['eye_gaze_dist_3D'] = np.sqrt(
+        df_dist['eye_gaze_vec_X']**2 +
+        df_dist['eye_gaze_vec_Y']**2 +
+        df_dist['eye_gaze_vec_Z']**2)
 
     return df_dist
 
@@ -185,15 +142,12 @@ def calculate_eye_to_gaze_metrics(df_in):
 def calculate_gaze_error_metrics(df_in):
     """
     Calculates per-point 3D angular error and 2D spatial error.
-    Returns a DataFrame with new columns for these metrics.
     """
     if df_in.empty:
         return pd.DataFrame()
 
     df_gaze = df_in.copy()
 
-    # 3D Angular Error (Visual Angle)
-    # The raw data should be used for calculation.
     gaze_vectors = df_gaze[['globalX', 'globalY', 'globalZ']].values - \
                    df_gaze[['eyeOriginX', 'eyeOriginY', 'eyeOriginZ']].values
     gaze_vectors_norm = normalize(gaze_vectors)
@@ -207,14 +161,11 @@ def calculate_gaze_error_metrics(df_in):
     df_gaze['angular_error_deg'] = np.rad2deg(
         np.arccos(df_gaze['cosine_similarity']))
 
-    # 2D Distance Error (Spatial Units)
     df_gaze['distance_2d'] = np.sqrt(
-        (df_gaze['globalX'] - df_gaze['globaltargetX'])**2 + \
+        (df_gaze['globalX'] - df_gaze['globaltargetX'])**2 +
         (df_gaze['globalY'] - df_gaze['globaltargetY'])**2
     )
 
-    # Block ID
-    # A new block is created every time the targetName changes
     df_gaze['block_id'] = (df_gaze['targetName']
                            != df_gaze['targetName'].shift()).cumsum()
 
@@ -223,8 +174,8 @@ def calculate_gaze_error_metrics(df_in):
 
 def summarize_metrics(df, metrics):
     """
-    Calculates mean, std, median, min, max, and 95th percentile for a list of metrics.
-    Returns a dictionary of the results.
+    Calculates mean, std, median, min, max, and 95th percentile
+    for a list of metrics.
     """
     stats = {}
     if df.empty:
@@ -243,20 +194,50 @@ def summarize_metrics(df, metrics):
     return stats
 
 
+# ────────────────────────────────────────────────────────────
 # Stable Window & Precision Functions
+# ────────────────────────────────────────────────────────────
 
+def find_stable_windows(df_gaze_with_errors, error_metric_col,
+                        window_duration_ms=500):
+    """
+    Finds the most stable window (lowest mean error) within each block.
+    Window size is calculated dynamically from timestamps to match
+    the requested duration in milliseconds (default: 500 ms).
 
-def find_stable_windows(df_gaze_with_errors, error_metric_col, window_size):
+    This ensures the same temporal duration is analysed regardless
+    of the eye tracker's sampling rate (e.g., 90 Hz vs 60 Hz).
+
+    Args:
+        df_gaze_with_errors: DataFrame with error metrics and timestamps.
+        error_metric_col: Column name to minimise (e.g., 'angular_error_deg').
+        window_duration_ms: Desired window duration in milliseconds.
+
+    Returns:
+        Concatenated DataFrame of all best windows (one per block).
     """
-    Finds the most stable window (lowest mean error) *within each block*.
-    Returns a single concatenated DataFrame of all best windows.
-    """
-    if df_gaze_with_errors.empty or error_metric_col not in df_gaze_with_errors.columns:
+    if df_gaze_with_errors.empty:
+        return pd.DataFrame()
+    if error_metric_col not in df_gaze_with_errors.columns:
         return pd.DataFrame()
 
     all_best_windows_dfs = []
 
     for block_id, block_df in df_gaze_with_errors.groupby('block_id'):
+        # ── Calculate dynamic window size from actual timestamps ──
+        if 'timestamp' in block_df.columns and len(block_df) >= 2:
+            dt_ms = block_df['timestamp'].diff().dropna() * 1000.0
+            # Remove spurious values (debounced < 1 ms or > 1000 ms)
+            dt_ms = dt_ms[(dt_ms >= 1.0) & (dt_ms <= 1000.0)]
+            if len(dt_ms) > 0:
+                median_dt_ms = dt_ms.median()
+                window_size = max(2, int(round(
+                    window_duration_ms / median_dt_ms)))
+            else:
+                window_size = len(block_df)
+        else:
+            window_size = len(block_df)
+
         if len(block_df) < window_size:
             continue
 
@@ -273,6 +254,8 @@ def find_stable_windows(df_gaze_with_errors, error_metric_col, window_size):
             continue
 
         selected_df = block_df.loc[best_start_index:best_end_index].copy()
+        # Store the actual window size used for this block
+        selected_df['window_size_used'] = window_size
         all_best_windows_dfs.append(selected_df)
 
     if not all_best_windows_dfs:
@@ -283,55 +266,45 @@ def find_stable_windows(df_gaze_with_errors, error_metric_col, window_size):
 
 def calculate_spatial_precision_metrics(df_stable_windows_all_blocks):
     """
-    Calculates angular precision (RMS and STD from centroid) for each stable window (block).
-    Precision is calculated in degrees (visual angle).
-    
-    Returns a DataFrame with one row per block and columns for precision metrics.
+    Calculates angular precision (RMS and STD from centroid) for each
+    stable window (block). Precision is calculated in degrees.
     """
-    if df_stable_windows_all_blocks.empty or 'block_id' not in df_stable_windows_all_blocks.columns:
+    if df_stable_windows_all_blocks.empty:
+        return pd.DataFrame()
+    if 'block_id' not in df_stable_windows_all_blocks.columns:
         return pd.DataFrame()
 
     all_precision_stats = []
 
     for block_id, block_df in df_stable_windows_all_blocks.groupby('block_id'):
-        if block_df.empty or len(
-                block_df) < 2:  # Need at least 2 points to calculate std
+        if block_df.empty or len(block_df) < 2:
             continue
 
-        # 3D Angular Precision
         eye_origins = block_df[['eyeOriginX', 'eyeOriginY',
                                 'eyeOriginZ']].values
         gaze_points = block_df[['globalX', 'globalY', 'globalZ']].values
         gaze_vectors = gaze_points - eye_origins
 
-        # Filter out zero-length vectors (e.g., if gaze point == eye origin)
         norms = np.linalg.norm(gaze_vectors, axis=1)
         valid_indices = norms > 1e-9
-        if np.sum(valid_indices) < 2:  # Need at least 2 valid vectors
+        if np.sum(valid_indices) < 2:
             continue
 
         valid_gaze_vectors = gaze_vectors[valid_indices]
         gaze_vectors_norm = normalize(valid_gaze_vectors)
 
-        # Calculate 3D angular centroid
         mean_gaze_vector = np.mean(gaze_vectors_norm, axis=0)
         centroid_gaze_vector = normalize(mean_gaze_vector.reshape(1, 3))[0]
 
-        # Calculate angular distance from each point to the centroid
         dot_products = np.sum(gaze_vectors_norm * centroid_gaze_vector, axis=1)
         angular_distances_3d_deg = np.rad2deg(
             np.arccos(np.clip(dot_products, -1.0, 1.0)))
 
-        # 2D Angular Precision (Azimuth/Elevation)
-        # Convert normalized vectors to angles
         azimuths_deg, elevations_deg = vectors_to_angles_deg(gaze_vectors_norm)
 
-        # Calculate 2D angular centroid (simple mean, assumes non-wrapping)
         centroid_az_deg = np.mean(azimuths_deg)
         centroid_el_deg = np.mean(elevations_deg)
 
-        # Calculate 2D angular distance from each point to the 2D centroid
-        # Handle azimuth wrap-around for distance calculation (e.g., -179 to +179 is 2 deg, not 358)
         delta_az = azimuths_deg - centroid_az_deg
         delta_az = (delta_az + 180) % 360 - 180
         delta_el = elevations_deg - centroid_el_deg
@@ -339,16 +312,15 @@ def calculate_spatial_precision_metrics(df_stable_windows_all_blocks):
         angular_distances_2d_deg = np.sqrt(delta_az**2 + delta_el**2)
 
         all_precision_stats.append({
-            'block_id':
-            block_id,
+            'block_id': block_id,
             'precision_rms_3d':
-            np.sqrt(np.mean(angular_distances_3d_deg**2)),
+                np.sqrt(np.mean(angular_distances_3d_deg**2)),
             'precision_std_3d':
-            np.std(angular_distances_3d_deg),
+                np.std(angular_distances_3d_deg),
             'precision_rms_2d':
-            np.sqrt(np.mean(angular_distances_2d_deg**2)),
+                np.sqrt(np.mean(angular_distances_2d_deg**2)),
             'precision_std_2d':
-            np.std(angular_distances_2d_deg)
+                np.std(angular_distances_2d_deg)
         })
 
     if not all_precision_stats:
@@ -357,21 +329,19 @@ def calculate_spatial_precision_metrics(df_stable_windows_all_blocks):
     return pd.DataFrame(all_precision_stats)
 
 
+# ────────────────────────────────────────────────────────────
 # Timeseries Helpers
-
+# ────────────────────────────────────────────────────────────
 
 def calculate_all_timeseries_metrics(df_in, has_valid_target):
     """
     Helper function to calculate all 4 key metrics for timeseries plots.
-    Returns a single DataFrame.
     """
     if df_in.empty:
         return pd.DataFrame()
 
     df_plot = df_in.copy()
 
-    # Calculate metrics
-    # Head movement calc now includes 'dt' and 'isi_ms'
     df_head = calculate_head_movement_metrics(df_plot)
     df_eye_gaze = calculate_eye_to_gaze_metrics(df_head)
 
@@ -379,7 +349,6 @@ def calculate_all_timeseries_metrics(df_in, has_valid_target):
         df_gaze_error = calculate_gaze_error_metrics(df_eye_gaze)
         return df_gaze_error
     else:
-        # Add empty columns so they exist for plotting
         df_eye_gaze['angular_error_deg'] = np.nan
         df_eye_gaze['distance_2d'] = np.nan
         return df_eye_gaze
@@ -388,18 +357,7 @@ def calculate_all_timeseries_metrics(df_in, has_valid_target):
 def resample_timeseries_data(data_list, metrics, n_points=1000):
     """
     Resamples all timeseries data to a fixed length (n_points) for averaging.
-    
-    Args:
-        data_list (list): List of dictionaries, e.g., [{'dataframe': df1, 'has_valid_target': True}, ...]
-        metrics (list): List of column names to resample, e.g., ['angular_error_deg', 'head_pos_velocity_mps', ...]
-        n_points (int): The number of points to resample to.
-
-    Returns:
-        tuple: (plot_stats, overall_stats)
-            plot_stats (dict): Dictionary with mean/std for resampled data. e.g., {'angular_error_deg': {'mean': [..], 'std': [..]}}
-            overall_stats (dict): Dictionary with single mean/std for *all* data. e.g., {'angular_error_deg': {'mean': 0.5, 'std': 0.1}}
     """
-
     resampled_data = {metric: [] for metric in metrics}
     all_data_raw = {metric: [] for metric in metrics}
 
@@ -407,38 +365,31 @@ def resample_timeseries_data(data_list, metrics, n_points=1000):
         df_raw = item['dataframe']
         has_valid_target = item['has_valid_target']
 
-        # 1. Calculate all metrics for this df
         df_metrics = calculate_all_timeseries_metrics(df_raw, has_valid_target)
         if df_metrics.empty:
             continue
 
-        # 2. Resample each metric
         df_metrics['time_sec'] = df_metrics['timestamp'] - df_metrics[
             'timestamp'].iloc[0]
-        
-        # FIX: Remove duplicate time indices to prevent reindex error
+
         df_metrics = df_metrics.drop_duplicates(subset='time_sec', keep='first')
 
-        # FIX: Keep only relevant numeric columns to prevent interpolation warnings with object/string cols
-        # Ensure we keep the index column 'time_sec' and valid metric columns
-        cols_to_keep = ['time_sec'] + [m for m in metrics if m in df_metrics.columns]
+        cols_to_keep = ['time_sec'] + [m for m in metrics
+                                       if m in df_metrics.columns]
         df_metrics = df_metrics[cols_to_keep]
-
         df_metrics = df_metrics.set_index('time_sec')
 
-        # Create a new index from 0 to max_time with n_points
         max_time = df_metrics.index.max()
-        if max_time == 0: continue  # Skip if no duration
+        if max_time == 0:
+            continue
 
         new_index = np.linspace(0, max_time, n_points)
-        
-        # Reindex and interpolate
-        # Using method='index' inside interpolate is deprecated in recent pandas for Series/DataFrame 
-        # if index is not unique, but we handled uniqueness above. 
-        # We rely on time-based interpolation (index is time).
-        df_resampled = df_metrics.reindex(df_metrics.index.union(new_index)).interpolate(method='index').loc[new_index]
 
-        # 3. Store results
+        df_resampled = (df_metrics
+                        .reindex(df_metrics.index.union(new_index))
+                        .interpolate(method='index')
+                        .loc[new_index])
+
         for metric in metrics:
             if metric in df_resampled.columns:
                 metric_data_resampled = df_resampled[metric].values
@@ -450,19 +401,15 @@ def resample_timeseries_data(data_list, metrics, n_points=1000):
                 if not metric_data_raw.empty:
                     all_data_raw[metric].append(metric_data_raw)
 
-    # 4. Calculate summary stats from resampled data (for plots)
     plot_stats = {}
     for metric, data_arrays in resampled_data.items():
         if data_arrays:
-            # Stack all arrays (n_sessions, n_points)
             stacked_data = np.stack(data_arrays)
-            # Calculate mean/std along the session axis (axis=0)
             plot_stats[metric] = {
                 'mean': np.nanmean(stacked_data, axis=0),
                 'std': np.nanstd(stacked_data, axis=0)
             }
 
-    # 5. Calculate overall summary stats from *all* raw data
     overall_stats = {}
     for metric, data_series_list in all_data_raw.items():
         if data_series_list:

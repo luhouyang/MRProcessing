@@ -7,7 +7,7 @@ import os
 import shutil
 from pathlib import Path
 import open3d as o3d
-# Import for statistical analysis
+
 from scipy.stats import friedmanchisquare, wilcoxon, spearmanr
 from statsmodels.sandbox.stats.multicomp import multipletests
 
@@ -15,12 +15,18 @@ import precision_toolkit as ptk
 
 # Configuration
 # Using pathlib for robust path handling
-SESSIONS_ROOT_DIR = Path(r'C:\Users\User\Desktop\Python\MRProcessing\data\high_90hz') # 90Hz data
-# SESSIONS_ROOT_DIR = Path(r"C:\Users\User\Desktop\Python\MRProcessing\data\mid_60hz") # 60Hz data
+# SESSIONS_ROOT_DIR = Path(r'C:\Users\User\Desktop\Python\MRProcessing\data\high_90hz') # 90Hz data
+SESSIONS_ROOT_DIR = Path(r"C:\Users\User\Desktop\Python\MRProcessing\data\mid_60hz") # 60Hz data
+
+# Fixation window duration in milliseconds (NOT sample count).
+# The toolkit converts this to a sample count dynamically per block
+# based on the actual inter-sample interval of the recorded data.
+# 90 Hz → ~45 samples, 60 Hz → ~30 samples, both = 500 ms.
+WINDOW_DURATION_MS = 500
 
 # Calculate RESULTS_DIR as a sibling folder to the data source
 # e.g., if data is in .../data/experiment_highsampling, results go to .../data/RESULTS
-RESULTS_DIR = SESSIONS_ROOT_DIR.parent / 'RESULTS'
+RESULTS_DIR = SESSIONS_ROOT_DIR / 'RESULTS'
 
 # Folders to process within each session
 FOLDERS_TO_ANALYZE = [
@@ -28,9 +34,6 @@ FOLDERS_TO_ANALYZE = [
     'UD0411(83)', 'PlaneWSW'
 ]
 
-# Window size (in samples) to use for finding the most stable fixation
-# For a 1-1.5s trial, 25 samples (e.g., 20ms per sample ~ 500ms)
-WINDOW_SIZE = 45
 
 # DATA FREQUENCY ANALYSIS
 
@@ -166,10 +169,23 @@ def analyze_data_frequency(df_in, viz_output_folder):
 
     return {
         'type': 'frequency',
-        'freq_mean': stats.get('frequency_hz_mean'),
-        'freq_std': stats.get('frequency_hz_std'),
-        'isi_mean': stats.get('isi_ms_mean'),
-        'isi_std': stats.get('isi_ms_std')
+        # Frequency (Hz)
+        'freq_mean':      stats.get('frequency_hz_mean'),
+        'freq_median':    stats.get('frequency_hz_median'),
+        'freq_std':       stats.get('frequency_hz_std'),
+        'freq_min':       stats.get('frequency_hz_min'),
+        'freq_max':       stats.get('frequency_hz_max'),
+        'freq_q95':       stats.get('frequency_hz_q95'),
+        # ISI (ms)
+        'isi_mean':       stats.get('isi_ms_mean'),
+        'isi_median':     stats.get('isi_ms_median'),
+        'isi_std':        stats.get('isi_ms_std'),
+        'isi_min':        stats.get('isi_ms_min'),
+        'isi_max':        stats.get('isi_ms_max'),
+        'isi_q95':        stats.get('isi_ms_q95'),
+        # Theoretical values
+        'freq_theoretical': theoretical_freq_hz,
+        'isi_theoretical':  theoretical_isi_ms,
     }
 
 
@@ -480,12 +496,16 @@ def analyze_head_movement(df_in, viz_output_folder):
     # Return key statistics
     return {
         'type': 'head',
-        'pos_vel_mean': stats_3d.get('head_pos_velocity_mps_mean'),
-        'pos_vel_std': stats_3d.get('head_pos_velocity_mps_std'),
+        # Positional velocity (m/s)
+        'pos_vel_mean':   stats_3d.get('head_pos_velocity_mps_mean'),
         'pos_vel_median': stats_3d.get('head_pos_velocity_mps_median'),
-        'ang_vel_mean': stats_ang.get('head_ang_velocity_dps_mean'),
-        'ang_vel_std': stats_ang.get('head_ang_velocity_dps_std'),
-        'ang_vel_median': stats_ang.get('head_ang_velocity_dps_median')
+        'pos_vel_std':    stats_3d.get('head_pos_velocity_mps_std'),
+        'pos_vel_q95':    stats_3d.get('head_pos_velocity_mps_q95'),
+        # Angular velocity (deg/s)
+        'ang_vel_mean':   stats_ang.get('head_ang_velocity_dps_mean'),
+        'ang_vel_median': stats_ang.get('head_ang_velocity_dps_median'),
+        'ang_vel_std':    stats_ang.get('head_ang_velocity_dps_std'),
+        'ang_vel_q95':    stats_ang.get('head_ang_velocity_dps_q95'),
     }
 
 
@@ -593,9 +613,10 @@ def analyze_eye_to_gaze_distance(df_in, viz_output_folder):
     # Return key statistics
     return {
         'type': 'eye_gaze_dist',
-        'eye_gaze_dist_mean': stats.get('eye_gaze_dist_3D_mean'),
-        'eye_gaze_dist_std': stats.get('eye_gaze_dist_3D_std'),
-        'eye_gaze_dist_median': stats.get('eye_gaze_dist_3D_median')
+        'eye_gaze_dist_mean':   stats.get('eye_gaze_dist_3D_mean'),
+        'eye_gaze_dist_median': stats.get('eye_gaze_dist_3D_median'),
+        'eye_gaze_dist_std':    stats.get('eye_gaze_dist_3D_std'),
+        'eye_gaze_dist_q95':    stats.get('eye_gaze_dist_3D_q95'),
     }
 
 
@@ -603,7 +624,7 @@ def analyze_gaze_data_3D(df_gaze_in,
                          output_path,
                          model_obj_path,
                          viz_output_folder,
-                         window_size=30):
+                         window_duration_ms=500):
     """
     Performs 3D analysis for saccade tasks.
     Uses toolkit to calculate metrics and find windows, then generates plots/reports.
@@ -615,7 +636,7 @@ def analyze_gaze_data_3D(df_gaze_in,
 
     # 2. Find Best Window *PER BLOCK*
     overall_best_df = ptk.find_stable_windows(df_gaze, 'angular_error_deg',
-                                              window_size)
+                                              window_duration_ms)
 
     if overall_best_df.empty:
         print(
@@ -665,7 +686,7 @@ def analyze_gaze_data_3D(df_gaze_in,
              f"Task Mode: Random Saccades (Per-Block Analysis)\n" \
              f"Coordinates: GLOBAL\n" \
              f"Windows Found: {n_windows} stable windows (one per block)\n" \
-             f"Window Size: {window_size} samples\n" \
+             f"Window Size: {window_duration_ms} samples\n" \
              f"Total Points in Windows: {len(overall_best_df)}\n\n" \
              f"METRICS (from all stable windows)\n" \
              f"Cosine Similarity:\n" \
@@ -1277,7 +1298,7 @@ def analyze_gaze_data_3D_TRACKING(df_gaze_in, output_path, model_obj_path,
 def analyze_gaze_data_2D(df_gaze_in,
                          output_path,
                          viz_output_folder,
-                         window_size=30):
+                         window_duration_ms=500):
     """
     Performs 2D analysis for static target tasks.
     Uses toolkit to calculate metrics and find windows, then generates plots/reports.
@@ -1290,7 +1311,7 @@ def analyze_gaze_data_2D(df_gaze_in,
     # 2. Find Best Window PER BLOCK
     # Use 'angular_error_deg' as it's the more robust metric
     overall_best_df = ptk.find_stable_windows(df_gaze, 'angular_error_deg',
-                                              window_size)
+                                              window_duration_ms)
 
     if overall_best_df.empty:
         print(
@@ -1511,8 +1532,12 @@ def analyze_gaze_data_2D(df_gaze_in,
 def run_summary_analysis(all_results_data, summary_output_dir):
     """
     Generates summary plots and CSV from all processed sessions.
-    """
 
+    Statistic rule:
+      - Frequency & ISI  -> MEDIAN (robust to dropped-sample outliers,
+                              Aziz & Komogortsev 2022 §3.4)
+      - All other metrics -> MEAN  (Kapp et al. 2021 §4.4)
+    """
     if not all_results_data:
         print("No data to summarize.")
         return
@@ -1526,44 +1551,46 @@ def run_summary_analysis(all_results_data, summary_output_dir):
     except Exception as e:
         print(f"Error saving summary CSV: {e}", file=sys.stderr)
 
+    # (column, title, ylabel, label_statistic)
     plot_definitions = [
-        ('freq_mean', 'Data Acquisition Rate MEAN (All Sessions)',
-         'Frequency (Hz)'),
-        ('freq_std', 'Data Acquisition Rate STDEV (All Sessions)',
-         'Frequency (Hz)'),
-        ('isi_mean', 'Inter-Sample Interval MEAN (All Sessions)', 'Time (ms)'),
-        ('isi_std', 'Inter-Sample Interval STDEV (All Sessions)', 'Time (ms)'),
-        ('eye_gaze_dist_mean',
-         'Eye-to-Gaze-Hit 3D Distance MEAN (All Sessions)', 'Distance (m)'),
-        ('eye_gaze_dist_std',
-         'Eye-to-Gaze-Hit 3D Distance STDEV (All Sessions)', 'Distance (m)'),
-        ('ang_err_std', '3D Angular Error STDEV (All Sessions)',
-         'Angular Error (deg)'),
+        # ── MEDIAN only for these two ──
+        ('freq_median', 'Sampling Frequency MEDIAN (All Sessions)',
+         'Frequency (Hz)', 'median'),
+        ('isi_median', 'Inter-Sample Interval MEDIAN (All Sessions)',
+         'Time (ms)', 'median'),
+        # ── MEAN for everything else ──
         ('ang_err_mean', '3D Angular Error MEAN (All Sessions)',
-         'Angular Error (deg)'),
-        ('dist_2d_std', '2D Distance Error STDEV (All Sessions)',
-         'Distance Error (units)'),
+         'Angular Error (deg)', 'mean'),
+        ('ang_err_std', '3D Angular Error STDEV (All Sessions)',
+         'Angular Error (deg)', 'mean'),
         ('dist_2d_mean', '2D Distance Error MEAN (All Sessions)',
-         'Distance Error (units)'),
-        ('pos_vel_std', 'Head Positional Velocity STDEV (All Sessions)',
-         'Velocity (m/s)'),
-        ('pos_vel_mean', 'Head Positional Velocity MEAN (All Sessions)',
-         'Velocity (m/s)'),
-        ('ang_vel_std', 'Head Angular Velocity STDEV (All Sessions)',
-         'Velocity (deg/s)'),
-        ('ang_vel_mean', 'Head Angular Velocity MEAN (All Sessions)',
-         'Velocity (deg/s)'),
+         'Distance Error (m)', 'mean'),
+        ('dist_2d_std', '2D Distance Error STDEV (All Sessions)',
+         'Distance Error (m)', 'mean'),
         ('precision_rms_3d_mean',
-         'Spatial Precision 3D (RMS) MEAN (All Sessions)', 'Precision (deg)'),
+         'Spatial Precision 3D (RMS) MEAN (All Sessions)',
+         'Precision (deg)', 'mean'),
         ('precision_std_3d_mean',
-         'Spatial Precision 3D (STD) MEAN (All Sessions)', 'Precision (deg)'),
-        ('precision_rms_2d_mean',
-         'Spatial Precision 2D (RMS) MEAN (All Sessions)', 'Precision (deg)'),
-        ('precision_std_2d_mean',
-         'Spatial Precision 2D (STD) MEAN (All Sessions)', 'Precision (deg)'),
+         'Spatial Precision 3D (STD) MEAN (All Sessions)',
+         'Precision (deg)', 'mean'),
+        ('eye_gaze_dist_mean', 'Viewing Distance MEAN (All Sessions)',
+         'Distance (m)', 'mean'),
+        ('eye_gaze_dist_std', 'Viewing Distance STDEV (All Sessions)',
+         'Distance (m)', 'mean'),
+        ('pos_vel_mean', 'Head Positional Velocity MEAN (All Sessions)',
+         'Velocity (m/s)', 'mean'),
+        ('pos_vel_std', 'Head Positional Velocity STDEV (All Sessions)',
+         'Velocity (m/s)', 'mean'),
+        ('ang_vel_mean', 'Head Angular Velocity MEAN (All Sessions)',
+         'Velocity (deg/s)', 'mean'),
+        ('ang_vel_std', 'Head Angular Velocity STDEV (All Sessions)',
+         'Velocity (deg/s)', 'mean'),
+        # To re-add 2D precision plots, uncomment:
+        # ('precision_rms_2d_mean', 'Spatial Precision 2D (RMS) MEAN (All Sessions)', 'Precision (deg)', 'mean'),
+        # ('precision_std_2d_mean', 'Spatial Precision 2D (STD) MEAN (All Sessions)', 'Precision (deg)', 'mean'),
     ]
 
-    for col, title, ylabel in plot_definitions:
+    for col, title, ylabel, label_stat in plot_definitions:
         if col not in df_summary.columns:
             continue
 
@@ -1572,8 +1599,9 @@ def run_summary_analysis(all_results_data, summary_output_dir):
             print(f"Skipping plot for '{col}' (no data).")
             continue
 
-        folders = df_plot['analysis_folder'].unique()
-        folders.sort()
+        # FIX: sorted() avoids ArrowStringArray .sort() AttributeError
+        folders = sorted(df_plot['analysis_folder'].unique())
+
         data_to_plot = [
             df_plot[df_plot['analysis_folder'] == f][col].values
             for f in folders
@@ -1582,28 +1610,41 @@ def run_summary_analysis(all_results_data, summary_output_dir):
             continue
 
         fig, ax = plt.subplots(figsize=(max(12, len(folders) * 1.5), 7))
-        ax.boxplot(data_to_plot,
-                   labels=folders,
-                   whis=[5, 95],
-                   showmeans=True,
-                   showfliers=True)
 
-        # Add text labels for mean values
+        if label_stat == 'median':
+            # Median plot: hide mean triangle so the only annotated
+            # statistic is the median (orange line).
+            ax.boxplot(data_to_plot, labels=folders, whis=[5, 95],
+                       showmeans=False, showfliers=True)
+        else:
+            # Mean plot: green triangle = mean, annotated in blue.
+            ax.boxplot(data_to_plot, labels=folders, whis=[5, 95],
+                       showmeans=True, showfliers=True)
+
+        # Text label: MEDIAN for freq/ISI only, MEAN for all others
         for i, data in enumerate(data_to_plot):
             if data.size > 0:
-                mean_val = np.nanmean(data)
+                if label_stat == 'median':
+                    val = np.nanmedian(data)
+                    tag, color = 'Med', 'darkorange'
+                else:
+                    val = np.nanmean(data)
+                    tag, color = 'Mean', 'blue'
                 ax.text(i + 1.05,
-                        mean_val,
-                        f' {mean_val:.3f}',
+                        val,
+                        f' {tag}: {val:.3f}',
                         verticalalignment='center',
                         horizontalalignment='left',
-                        color='blue',
+                        color=color,
                         fontsize=9,
                         fontweight='bold')
 
-        ax.set_title(title), ax.set_ylabel(ylabel), ax.set_xlabel('Task')
+        ax.set_title(title)
+        ax.set_ylabel(ylabel)
+        ax.set_xlabel('Task')
         plt.xticks(rotation=45, ha='right')
-        plt.grid(True, linestyle='--', alpha=0.6, axis='y'), plt.tight_layout()
+        plt.grid(True, linestyle='--', alpha=0.6, axis='y')
+        plt.tight_layout()
 
         plot_filename = f"summary_plot_{col}.png"
         plot_path = os.path.join(summary_output_dir, plot_filename)
@@ -2325,11 +2366,10 @@ def main():
                 mean_isi_val = df_freq_check['isi_ms'].mean()
                 median_isi_val = df_freq_check['isi_ms'].median()
                 
-                # Filter: If Mean ISI > 30ms, exclude this entire sample (folder)
-                if median_isi_val > 20:
-                    print(f"Skipping {folder_name}: Median ISI ({median_isi_val:.2f} ms) > 30 ms threshold.")
-                    continue
-                # --- NEW LOGIC END ---
+                # # Filter: If Mean ISI > 30ms, exclude this entire sample (folder)
+                # if median_isi_val > 33:
+                #     print(f"Skipping {folder_name}: Median ISI ({median_isi_val:.2f} ms) > 30 ms threshold.")
+                #     continue
 
                 has_valid_target = True
                 if 'targetName' not in df_gaze.columns or df_gaze[
@@ -2405,7 +2445,7 @@ def main():
                         df_gaze.copy(),
                         output_path=folder_path,
                         viz_output_folder=viz_output_folder,
-                        window_size=WINDOW_SIZE)
+                        window_duration_ms=WINDOW_DURATION_MS)
                 elif folder_name in ['PlaneWSW']:
                     gaze_results = analyze_gaze_data_3D_TRACKING(
                         df_gaze.copy(),
@@ -2418,7 +2458,7 @@ def main():
                         output_path=folder_path,
                         model_obj_path=model_obj_path,
                         viz_output_folder=viz_output_folder,
-                        window_size=WINDOW_SIZE)
+                        window_duration_ms=WINDOW_DURATION_MS)
             if gaze_results:
                 gaze_results['session'] = session_name
                 gaze_results['analysis_folder'] = folder_name
